@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DoStudy Buddy v0.1</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 40px auto; padding: 0 20px; }
+    .chat { border: 1px solid #ddd; border-radius: 16px; padding: 20px; min-height: 360px; }
+    .msg { margin: 12px 0; padding: 12px 14px; border-radius: 12px; background: #f4f4f4; }
+    .user { background: #e9e3ff; }
+    textarea { width: 100%; box-sizing: border-box; margin-top: 16px; padding: 12px; border-radius: 10px; }
+    button { margin-top: 10px; padding: 10px 16px; border: 0; border-radius: 10px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>DoStudy Buddy</h1>
+  <p>RCA Year 1 Physics · Dimensional Analysis</p>
+  <div id="chat" class="chat"></div>
+  <textarea id="input" rows="3" placeholder="Ask about dimensional analysis..."></textarea>
+  <button id="send">Ask DoStudy Buddy</button>
+
+  <script>
+    const chat = document.getElementById("chat");
+    const input = document.getElementById("input");
+    const history = [];
+
+    function add(role, content) {
+      const el = document.createElement("div");
+      el.className = "msg " + (role === "user" ? "user" : "");
+      el.textContent = (role === "user" ? "You: " : "DoStudy Buddy: ") + content;
+      chat.appendChild(el);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function send() {
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      add("user", message);
+      history.push({ role: "user", content: message });
+
+      const r = await fetch("http://localhost:3001/api/tutor/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, history })
+      });
+
+      const data = await r.json();
+      add("assistant", data.reply || data.error);
+      history.push({ role: "assistant", content: data.reply || data.error });
+    }
+
+    document.getElementById("send").onclick = send;
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+
+    add("assistant", "Hi! I can help you learn dimensional analysis. What part are you finding difficult?");
+  </script>
+</body>
+</html>

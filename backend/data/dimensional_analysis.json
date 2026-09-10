@@ -1,0 +1,236 @@
+{
+  "project": "DoStudy",
+  "ai": "DoStudy Buddy",
+  "version": "v0.1",
+  "target": {
+    "school": "Rwanda Coding Academy",
+    "level": "Year 1",
+    "subject": "Applied Physics I",
+    "topic": "Basic Measurements - Dimensional Analysis"
+  },
+  "purpose": "Create a small, curriculum-grounded knowledge base for a guided AI tutor. The tutor should help a learner reason through problems instead of immediately revealing final answers.",
+  "source_layers": [
+    {
+      "type": "official_curriculum",
+      "file": "GENAP302 - Applied Physics I",
+      "use": "Defines the expected learning scope."
+    },
+    {
+      "type": "school_notes",
+      "file": "Describe Coordinates Systems and Basic Measurements in Physics_Updated.pdf",
+      "use": "Captures the teaching material used in the collected RCA material."
+    },
+    {
+      "type": "school_exercises",
+      "files": [
+        "Assignment No1 on Basic measurement in Physics.pdf",
+        "Assignment No2 on Basic measurement in Physics.pdf",
+        "Revision_Exercises_AppliedPhysics_2026A_Y1 (1).pdf"
+      ],
+      "use": "Provides practice-question patterns for testing the tutor."
+    }
+  ],
+  "learning_goals": [
+    "Understand what dimensions represent.",
+    "Recognize fundamental dimensions used in the collected school notes.",
+    "Assign dimensions to physical quantities.",
+    "Use dimensional analysis to check whether an equation is homogeneous.",
+    "Use dimensional analysis to determine dimensions or units of derived quantities.",
+    "Understand that dimensional consistency does not by itself prove that an equation is physically correct.",
+    "Apply dimensional analysis to derive relationships when enough information is available."
+  ],
+  "knowledge": {
+    "definition": "Dimensional analysis expresses physical quantities in terms of combinations of fundamental dimensions.",
+    "notation": "The school notes use square brackets [ ] to denote the dimension of a physical quantity.",
+    "fundamental_dimensions_in_notes": [
+      {
+        "quantity": "Length",
+        "symbol": "L"
+      },
+      {
+        "quantity": "Time",
+        "symbol": "T"
+      },
+      {
+        "quantity": "Mass",
+        "symbol": "M"
+      },
+      {
+        "quantity": "Current",
+        "symbol": "I"
+      },
+      {
+        "quantity": "Temperature",
+        "symbol": "K"
+      },
+      {
+        "quantity": "Luminous intensity",
+        "symbol": "cd"
+      },
+      {
+        "quantity": "Amount of substance",
+        "symbol": "mol"
+      }
+    ],
+    "core_uses": [
+      "Derive an equation.",
+      "Check whether an equation is dimensionally correct or homogeneous.",
+      "Find the dimensions or units of derived quantities."
+    ],
+    "important_caution": "A dimensionally correct equation is not necessarily physically correct.",
+    "school_example": {
+      "relationship": "s = vt",
+      "reasoning": "Compare the dimension of displacement with the product of the dimensions of velocity and time; the notes present equality of both sides as the basis for homogeneity."
+    }
+  },
+  "related_prerequisites": [
+    "Physical quantities and measurements",
+    "SI units and metric prefixes",
+    "Derived physical quantities",
+    "Basic algebra",
+    "Powers and indices"
+  ],
+  "derived_quantity_examples_from_notes": [
+    {
+      "quantity": "Velocity",
+      "relationship": "displacement / time",
+      "unit": "m/s"
+    },
+    {
+      "quantity": "Acceleration",
+      "relationship": "velocity / time",
+      "unit": "m/s^2"
+    },
+    {
+      "quantity": "Force",
+      "relationship": "mass × acceleration",
+      "unit": "N"
+    },
+    {
+      "quantity": "Work",
+      "relationship": "force × displacement",
+      "unit": "J"
+    },
+    {
+      "quantity": "Power",
+      "relationship": "force × displacement / time",
+      "unit": "W"
+    },
+    {
+      "quantity": "Pressure",
+      "relationship": "force / area",
+      "unit": "Pa"
+    }
+  ],
+  "common_mistakes_to_test": [
+    "Confusing a physical unit with a physical dimension.",
+    "Forgetting that powers multiply dimensions.",
+    "Comparing numerical values instead of dimensions.",
+    "Treating dimensional consistency as proof that an equation is fully correct.",
+    "Losing track of dimensions when rearranging a formula.",
+    "Giving the final answer without showing the dimensional reasoning."
+  ],
+  "exercise_bank": [
+    {
+      "id": "DA-EX-01",
+      "type": "check_homogeneity",
+      "difficulty": "easy",
+      "prompt_summary": "Use dimensional analysis to decide whether several kinematics equations are dimensionally correct.",
+      "skills": [
+        "assign dimensions",
+        "compare both sides"
+      ]
+    },
+    {
+      "id": "DA-EX-02",
+      "type": "derive_unit",
+      "difficulty": "medium",
+      "prompt_summary": "Use Newton's universal gravitation relationship to determine the SI unit of the gravitational constant.",
+      "skills": [
+        "rearrange formula",
+        "derive dimensions",
+        "convert to SI unit"
+      ]
+    },
+    {
+      "id": "DA-EX-03",
+      "type": "check_homogeneity",
+      "difficulty": "medium",
+      "prompt_summary": "Verify the dimensional consistency of the simple-pendulum period relationship.",
+      "skills": [
+        "identify dimensions of length and acceleration",
+        "combine powers"
+      ]
+    },
+    {
+      "id": "DA-EX-04",
+      "type": "derive_powers",
+      "difficulty": "medium",
+      "prompt_summary": "Given displacement as proportional to a dimensionless constant times acceleration raised to m and time raised to n, determine m and n using dimensions.",
+      "skills": [
+        "set up dimensional equation",
+        "solve simultaneous exponent relationships"
+      ]
+    },
+    {
+      "id": "DA-EX-05",
+      "type": "concept_check",
+      "difficulty": "easy",
+      "prompt_summary": "Explain why dimensional correctness alone does not guarantee that an equation is physically correct.",
+      "skills": [
+        "conceptual reasoning"
+      ]
+    },
+    {
+      "id": "DA-EX-06",
+      "type": "derive_dimension",
+      "difficulty": "easy",
+      "prompt_summary": "Determine dimensions of a derived physical quantity from its defining relationship.",
+      "skills": [
+        "translate formula into dimensions"
+      ]
+    },
+    {
+      "id": "DA-EX-07",
+      "type": "unit_and_dimension",
+      "difficulty": "easy",
+      "prompt_summary": "Distinguish the SI unit of a quantity from its dimension.",
+      "skills": [
+        "unit-vs-dimension distinction"
+      ]
+    }
+  ],
+  "tutor_behavior": {
+    "identity": "Buddy, the DoStudy AI tutor for RCA Year 1 Physics.",
+    "principles": [
+      "Guide before revealing.",
+      "Ask what the learner already knows.",
+      "Use progressive hints.",
+      "Prefer short explanations followed by a learner action.",
+      "Use examples connected to practical or familiar situations when appropriate.",
+      "Stay within the selected topic and source material.",
+      "Correct reasoning constructively.",
+      "Do not pretend that unsupported information came from RCA material."
+    ],
+    "hint_ladder": [
+      "Level 1: Ask a guiding question.",
+      "Level 2: Remind the learner of the relevant concept.",
+      "Level 3: Give the needed formula or dimensional relationship.",
+      "Level 4: Show one partial step and ask the learner to continue.",
+      "Level 5: Give the complete worked explanation when appropriate."
+    ]
+  },
+  "evaluation_cases": [
+    "Learner asks for the answer immediately.",
+    "Learner gives a wrong dimension.",
+    "Learner confuses units and dimensions.",
+    "Learner correctly identifies dimensions but makes an algebra error.",
+    "Learner asks a question outside the current topic.",
+    "Learner provides an equation that is dimensionally inconsistent.",
+    "Learner asks for a real-life example.",
+    "Learner says 'I don't understand' without specifying the problem.",
+    "Learner solves a problem correctly and Buddy should not unnecessarily over-explain.",
+    "Buddy must avoid claiming a school-specific method unless it is present in the supplied material."
+  ],
+  "next_step": "Convert this knowledge base into the backend retrieval/tutor format on Day 3, then connect it to a controlled AI prompt and a math/calculation helper."
+}
