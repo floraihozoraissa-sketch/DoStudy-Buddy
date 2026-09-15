@@ -1,20 +1,33 @@
-import fs from "node:fs";
-import path from "node:path";
+// DoStudy Buddy v0.5
+// Complete guided-learning engine.
+//
+// Learning loop:
+// Practice → Attempt → Check → Hint → Retry → Progress → Difficulty
+//
+// Important:
+// - Maximum ONE AI request per student turn.
+// - Curriculum retrieval is local.
+// - Learning state is managed locally.
+// - AI acts as a tutor, not an answer generator.
+
+import fs from "fs";
+import path from "path";
 import OpenAI from "openai";
 
-// ============================================================
-// CONFIG
-// ============================================================
+import {
+  getSession,
+  updateSession,
+  recordAttempt,
+  recordHint,
+  startExercise,
+  finishExercise,
+  getProgress
+} from "./learningState.js";
 
-const kbPath = path.resolve(
-  process.cwd(),
-  "data",
-  "dimensional_analysis.json"
-);
-
-const knowledgeBase = JSON.parse(
-  fs.readFileSync(kbPath, "utf8")
-);
+import {
+  adjustDifficulty,
+  getProgressMessage
+} from "./progressEngine.js";
 
 const client = process.env.OPENAI_API_KEY
   ? new OpenAI({
@@ -22,137 +35,141 @@ const client = process.env.OPENAI_API_KEY
     })
   : null;
 
-const MODEL =
-  process.env.OPENAI_MODEL ||
-  "gpt-5.6-luna";
+// ---------------------------------------------------------
+// 1. LOAD KNOWLEDGE BASE
+// ---------------------------------------------------------
 
+const knowledgePath = path.join(
+  process.cwd(),
+  "data",
+  "dimensional_analysis.json"
+);
 
-// ============================================================
-// KNOWLEDGE BASE
-// ============================================================
+let knowledgeBase = {};
 
-function flattenKnowledge(value, output = []) {
+try {
+  knowledgeBase = JSON.parse(
+    fs.readFileSync(knowledgePath, "utf8")
+  );
+} catch (error) {
+  console.error(
+    "DoStudy Buddy: Could not load knowledge base.",
+    error.message
+  );
+}
+
+// ---------------------------------------------------------
+// 2. KNOWLEDGE RETRIEVAL
+// ---------------------------------------------------------
+
+function flattenKnowledge(value, pathParts = []) {
+  const chunks = [];
+
   if (typeof value === "string") {
-    output.push(value);
-  } else if (Array.isArray(value)) {
-    value.forEach((item) => {
-      flattenKnowledge(item, output);
+    chunks.push({
+      text: value,
+      path: pathParts.join(" > ")
     });
-  } else if (value && typeof value === "object") {
-    Object.values(value).forEach((item) => {
-      flattenKnowledge(item, output);
-    });
+
+    return chunks;
   }
 
-  return output;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      chunks.push(
+        ...flattenKnowledge(
+          item,
+          [...pathParts, String(index)]
+        )
+      );
+    });
+
+    return chunks;
+  }
+
+  if (value && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      chunks.push(
+        ...flattenKnowledge(
+          child,
+          [...pathParts, key]
+        )
+      );
+    }
+  }
+
+  return chunks;
 }
 
 const knowledgeChunks =
-  flattenKnowledge(knowledgeBase.knowledge);
+  flattenKnowledge(knowledgeBase);
 
-const exerciseChunks =
-  flattenKnowledge(knowledgeBase.exercise_bank);
+function retrieveRelevantChunks(query, limit = 6) {
+  if (!query || !knowledgeChunks.length) {
+    return [];
+  }
 
-const allChunks = [
-  ...knowledgeChunks,
-  ...exerciseChunks
-];
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(term => term.length > 2);
 
+  const scored = knowledgeChunks.map(chunk => {
+    const text = chunk.text.toLowerCase();
 
-// ============================================================
-// CONVERSATION
-// ============================================================
+    let score = 0;
 
-function cleanHistory(history) {
+    for (const term of terms) {
+      if (text.includes(term)) {
+        score += 1;
+      }
+    }
+
+    return {
+      ...chunk,
+      score
+    };
+  });
+
+  return scored
+    .filter(chunk => chunk.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+// ---------------------------------------------------------
+// 3. HISTORY
+// ---------------------------------------------------------
+
+function cleanHistory(history = []) {
   if (!Array.isArray(history)) {
     return [];
   }
 
   return history
     .filter(
-      (message) =>
-        message &&
-        typeof message.content === "string"
+      item =>
+        item &&
+        typeof item.role === "string" &&
+        typeof item.content === "string"
     )
     .slice(-12);
 }
 
-
 function formatHistory(history) {
-  const clean = cleanHistory(history);
-
-  if (clean.length === 0) {
-    return "No previous conversation.";
-  }
-
-  return clean
-    .map((message) => {
-      const role =
-        message.role === "assistant"
-          ? "DoStudy Buddy"
-          : "Student";
-
-      return `${role}: ${message.content}`;
-    })
+  return cleanHistory(history)
+    .map(
+      item =>
+        `${item.role.toUpperCase()}: ${item.content}`
+    )
     .join("\n");
 }
 
+// ---------------------------------------------------------
+// 4. VALID AI OUTPUT
+// ---------------------------------------------------------
 
-// ============================================================
-// LOCAL CURRICULUM RETRIEVAL
-// ============================================================
-
-function retrieveRelevantChunks(
-  query,
-  limit = 6
-) {
-  if (!query) {
-    return [];
-  }
-
-  const terms = query
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(
-      (term) => term.length > 1
-    );
-
-  const scored = allChunks.map((chunk) => {
-    const text = chunk.toLowerCase();
-
-    let score = 0;
-
-    for (const term of terms) {
-      if (text.includes(term)) {
-        score++;
-      }
-    }
-
-    return {
-      chunk,
-      score
-    };
-  });
-
-  return scored
-    .filter(
-      (item) => item.score > 0
-    )
-    .sort(
-      (a, b) => b.score - a.score
-    )
-    .slice(0, limit)
-    .map(
-      (item) => item.chunk
-    );
-}
-
-
-// ============================================================
-// VALID INTENTS
-// ============================================================
-
-const VALID_INTENTS = new Set([
+const VALID_INTENTS = [
   "GREETING",
   "EXPLAIN",
   "SIMPLIFY",
@@ -166,15 +183,11 @@ const VALID_INTENTS = new Set([
   "CONTINUE",
   "ENCOURAGEMENT",
   "CASUAL_CONVERSATION",
+  "PROGRESS",
   "OUT_OF_SCOPE"
-]);
+];
 
-
-// ============================================================
-// VALID LEARNING ACTIONS
-// ============================================================
-
-const VALID_ACTIONS = new Set([
+const VALID_ACTIONS = [
   "CONVERSATION",
   "EXPLAIN",
   "SIMPLIFY",
@@ -185,845 +198,901 @@ const VALID_ACTIONS = new Set([
   "INCREASE_DIFFICULTY",
   "DECREASE_DIFFICULTY",
   "CONTINUE",
+  "SHOW_PROGRESS",
   "REDIRECT"
-]);
+];
 
+const VALID_DIFFICULTIES = [
+  "easy",
+  "medium",
+  "hard",
+  "unknown"
+];
 
-// ============================================================
-// NORMALIZE AI RESULT
-// ============================================================
+const VALID_RESULTS = [
+  "CORRECT",
+  "PARTIAL",
+  "INCORRECT",
+  "UNCLEAR",
+  "NONE"
+];
 
-function normalizeTutorResult(parsed) {
-  const intent =
-    VALID_INTENTS.has(parsed?.intent)
-      ? parsed.intent
-      : "CONTINUE";
+// ---------------------------------------------------------
+// 5. NORMALIZE AI RESULT
+// ---------------------------------------------------------
 
-  const learningAction =
-    VALID_ACTIONS.has(parsed?.learning_action)
-      ? parsed.learning_action
-      : "CONTINUE";
+function normalizeTutorResult(result) {
+  const normalized = {
+    intent: VALID_INTENTS.includes(result?.intent)
+      ? result.intent
+      : "CONTINUE",
 
-  const confidence =
-    Number(parsed?.confidence);
-
-  return {
-    intent,
     topic:
-      typeof parsed?.topic === "string"
-        ? parsed.topic
+      typeof result?.topic === "string"
+        ? result.topic
         : "",
-    learning_action: learningAction,
+
+    learning_action:
+      VALID_ACTIONS.includes(result?.learning_action)
+        ? result.learning_action
+        : "CONTINUE",
+
     difficulty:
-      typeof parsed?.difficulty === "string"
-        ? parsed.difficulty
+      VALID_DIFFICULTIES.includes(result?.difficulty)
+        ? result.difficulty
         : "unknown",
+
     confidence:
-      Number.isFinite(confidence)
+      typeof result?.confidence === "number"
         ? Math.max(
             0,
-            Math.min(1, confidence)
+            Math.min(1, result.confidence)
           )
-        : 0,
+        : 0.5,
+
     reply:
-      typeof parsed?.reply === "string"
-        ? parsed.reply.trim()
-        : ""
+      typeof result?.reply === "string"
+        ? result.reply.trim()
+        : "",
+
+    exercise: null,
+
+    check: {
+      status: "NONE",
+      feedback: "",
+      needs_hint: false
+    }
+  };
+
+  // Exercise
+  if (
+    result?.exercise &&
+    typeof result.exercise === "object"
+  ) {
+    normalized.exercise = {
+      id:
+        typeof result.exercise.id === "string"
+          ? result.exercise.id
+          : `exercise-${Date.now()}`,
+
+      question:
+        typeof result.exercise.question === "string"
+          ? result.exercise.question
+          : "",
+
+      concept:
+        typeof result.exercise.concept === "string"
+          ? result.exercise.concept
+          : normalized.topic,
+
+      expected_answer_type:
+        typeof result.exercise.expected_answer_type ===
+        "string"
+          ? result.exercise.expected_answer_type
+          : "reasoning"
+    };
+  }
+
+  // Check
+  if (
+    result?.check &&
+    typeof result.check === "object"
+  ) {
+    const status =
+      typeof result.check.status === "string"
+        ? result.check.status.toUpperCase()
+        : "NONE";
+
+    normalized.check.status =
+      VALID_RESULTS.includes(status)
+        ? status
+        : "NONE";
+
+    normalized.check.feedback =
+      typeof result.check.feedback === "string"
+        ? result.check.feedback
+        : "";
+
+    normalized.check.needs_hint =
+      Boolean(result.check.needs_hint);
+  }
+
+  return normalized;
+}
+
+// ---------------------------------------------------------
+// 6. FALLBACK
+// ---------------------------------------------------------
+
+function localFallback(message, state) {
+  const text = message.toLowerCase();
+
+  if (
+    text.includes("hi") ||
+    text.includes("hello") ||
+    text.includes("hey") ||
+    text.includes("yo")
+  ) {
+    return {
+      intent: "GREETING",
+      topic: state.topic,
+      learning_action: "CONVERSATION",
+      difficulty: state.difficulty,
+      confidence: 1,
+      reply:
+        "Hey! 👋 Ready to learn? We can explain a concept, work through an example, or practice."
+    };
+  }
+
+  if (
+    text.includes("practice") ||
+    text.includes("exercise") ||
+    text.includes("problem")
+  ) {
+    return {
+      intent: "PRACTICE",
+      topic: state.topic,
+      learning_action: "GENERATE_EXERCISE",
+      difficulty: state.difficulty,
+      confidence: 0.8,
+      reply:
+        "Let's practice. I'll give you a problem first—try it yourself before asking for a hint.",
+      exercise: {
+        id: `fallback-${Date.now()}`,
+        question:
+          "Use dimensional analysis to check whether s = vt is dimensionally consistent.",
+        concept: "dimensional consistency",
+        expected_answer_type: "reasoning"
+      },
+      check: {
+        status: "NONE",
+        feedback: "",
+        needs_hint: false
+      }
+    };
+  }
+
+  if (
+    text.includes("hint") ||
+    text.includes("help") ||
+    text.includes("don't know") ||
+    text.includes("dont know")
+  ) {
+    return {
+      intent: "HINT",
+      topic: state.topic,
+      learning_action: "GIVE_HINT",
+      difficulty: state.difficulty,
+      confidence: 0.9,
+      reply:
+        "Start by writing the dimensions of each quantity in the equation. Then compare the two sides."
+    };
+  }
+
+  if (
+    text.includes("easier") ||
+    text.includes("simpler") ||
+    text.includes("confusing") ||
+    text.includes("lost")
+  ) {
+    return {
+      intent: "SIMPLIFY",
+      topic: state.topic,
+      learning_action: "SIMPLIFY",
+      difficulty: state.difficulty,
+      confidence: 0.9,
+      reply:
+        "No worries. Think of dimensional analysis as a unit check: compare what the left side represents with what the right side represents."
+    };
+  }
+
+  if (
+    text.includes("example") ||
+    text.includes("real life")
+  ) {
+    return {
+      intent: "EXAMPLE",
+      topic: state.topic,
+      learning_action: "GIVE_EXAMPLE",
+      difficulty: state.difficulty,
+      confidence: 0.9,
+      reply:
+        "Imagine you're building a robot and calculate a movement equation. Dimensional analysis helps you catch equations whose units don't make physical sense before using them."
+    };
+  }
+
+  if (
+    text.includes("how am i doing") ||
+    text.includes("my progress") ||
+    text.includes("progress")
+  ) {
+    const progress = getProgress();
+
+    return {
+      intent: "PROGRESS",
+      topic: state.topic,
+      learning_action: "SHOW_PROGRESS",
+      difficulty: state.difficulty,
+      confidence: 1,
+      reply: getProgressMessage(progress)
+    };
+  }
+
+  return {
+    intent: "CONTINUE",
+    topic: state.topic,
+    learning_action: "CONTINUE",
+    difficulty: state.difficulty,
+    confidence: 0.5,
+    reply:
+      "Let's keep going with dimensional analysis. What part would you like to work on?"
   };
 }
 
-
-// ============================================================
-// LOCAL FALLBACK
-// ============================================================
-
-function localFallback(
-  message,
-  history = [],
-  intent = "CONTINUE"
-) {
-
-  switch (intent) {
-
-    case "GREETING":
-      return "Yo! 😎 What's up? Ready to tackle some Physics?";
-
-    case "PRACTICE":
-      return (
-        "Bet 😎 Here's one to try:\n\n" +
-        "**Check whether this equation is dimensionally consistent:**\n\n" +
-        "`s = vt`\n\n" +
-        "Start by writing the dimensions of `v` and `t`. " +
-        "Send me your reasoning — don't worry about the final answer yet."
-      );
-
-    case "HINT":
-      return (
-        "Here's a small clue 👀:\n\n" +
-        "Start by writing the dimensions of each quantity. " +
-        "Then compare the dimensions on both sides."
-      );
-
-    case "SIMPLIFY":
-    case "CONFUSION":
-      return (
-        "No worries 😄 Let's make it simpler.\n\n" +
-        "Think of dimensional analysis as a Physics consistency check. " +
-        "The two sides of an equation need to represent the same type " +
-        "of physical quantity.\n\n" +
-        "Let's take it one small step at a time."
-      );
-
-    case "CHECK_ANSWER":
-      return (
-        "Let's check it together 👀. " +
-        "Show me the steps you used to get that answer, " +
-        "and we'll see where everything lines up."
-      );
-
-    case "CHALLENGE":
-      return (
-        "Alright, level up 🔥. " +
-        "I'll give you a tougher problem. " +
-        "Try it first without looking for the solution."
-      );
-
-    case "EASIER":
-      return (
-        "Absolutely 😄 Let's drop the difficulty a bit. " +
-        "We'll start with a simpler problem and build up."
-      );
-
-    case "EXAMPLE":
-      return (
-        "Sure! Imagine you're checking a Physics equation " +
-        "before using it in a small robot program 🤖. " +
-        "Dimensional analysis helps you catch equations " +
-        "whose two sides don't represent the same physical quantity."
-      );
-
-    case "ENCOURAGEMENT":
-      return (
-        "Nice 😎 You're getting it. Let's keep going."
-      );
-
-    case "CASUAL_CONVERSATION":
-      return "Nice 😄 What's next?";
-
-    default:
-      return (
-        "Let's work through it together 🧠⚡. " +
-        "Tell me what part you're unsure about."
-      );
-  }
-}
-
-
-// ============================================================
-// TUTOR SYSTEM
-// ============================================================
+// ---------------------------------------------------------
+// 7. TUTOR SYSTEM PROMPT
+// ---------------------------------------------------------
 
 const TUTOR_SYSTEM_PROMPT = `
-You are DoStudy Buddy.
+You are DoStudy Buddy, a friendly AI learning tutor for students.
 
-You are an AI learning companion for Rwanda Coding Academy
-students.
+Your job is NOT to simply give answers.
 
-CURRENT LEARNING DOMAIN:
+Your job is to help students:
+- understand concepts
+- think through problems
+- practice
+- learn from mistakes
+- use real-life examples
+- become more independent
 
-RCA Year 1 Applied Physics, especially the supplied material
-for Basic Measurements and Dimensional Analysis.
+CURRENT CURRICULUM SCOPE:
+The current knowledge base is Applied Physics, especially dimensional analysis.
 
-Your job is NOT merely to answer questions.
+IMPORTANT:
+You may have conversational knowledge outside the curriculum, but DoStudy is a learning tutor.
+For questions clearly outside the educational scope, redirect briefly and naturally.
 
-Your job is to help the student understand.
+NATURAL CONVERSATION:
+Students may use slang, short messages, typos, emojis, informal English, or developer-style language.
+Understand their meaning from context.
 
-------------------------------------------------------------
-IMPORTANT: ONE RESPONSE DOES EVERYTHING
-------------------------------------------------------------
-
-You must understand the student's current message AND
-produce the appropriate tutoring response in the SAME request.
-
-Do not describe your internal reasoning.
-
-Do not mention this classification system to the student.
-
-------------------------------------------------------------
-CURRENT MESSAGE HAS PRIORITY
-------------------------------------------------------------
-
-Conversation history gives context.
-
-However, the CURRENT student message determines what they
-want NOW.
-
-Students naturally switch activities:
-
-EXPLAIN → SIMPLIFY → PRACTICE → CHECK_ANSWER → HINT → PRACTICE
-
-This is completely normal.
-
-Never force the student to continue the previous activity.
-
-------------------------------------------------------------
-UNDERSTAND NATURAL LANGUAGE
-------------------------------------------------------------
-
-Students may use:
-
-- normal English
-- informal English
-- slang
-- contractions
-- abbreviations
-- developer language
-- emojis
-- typos
-- incomplete sentences
-- short messages
-- casual expressions
-
-Understand meaning rather than matching keywords.
-
-Examples:
-
-"yo"
+A greeting such as:
+"yo bro"
+"hi"
 "hey"
-"sup"
-→ GREETING
+should receive a natural greeting.
 
-"bro I'm lost"
-"nah I don't get this"
-"my brain isn't braining"
-→ CONFUSION or SIMPLIFY
+Do NOT classify normal conversational follow-ups as OUT_OF_SCOPE.
 
-"walk me through it"
-"how does this work?"
-→ EXPLAIN
-
-"break it down"
-"make it easier"
-→ SIMPLIFY
-
-"where would I use this?"
-"give me a practical example"
-→ EXAMPLE
-
-"hit me with a problem"
-"test me"
-"lemme try one"
-→ PRACTICE
-
-"give me another"
-→ PRACTICE
-
-"make it harder"
-"level me up"
-→ CHALLENGE
-
-"make it easier"
-→ EASIER
-
-"give me a clue"
-"small hint?"
-→ HINT
-
-"my answer is 5 N"
-"did I get this right?"
-→ CHECK_ANSWER
-
-"what's next?"
-"continue"
-→ CONTINUE
-
-"thanks"
-"nice"
-"cool"
-→ CASUAL_CONVERSATION or ENCOURAGEMENT
-
-------------------------------------------------------------
-CONTEXT
-------------------------------------------------------------
-
-Short messages can depend on previous conversation.
-
-Example:
-
-Student:
-Explain dimensional analysis.
-
-Buddy:
-[explanation]
-
-Student:
-"bro I'm cooked 💀"
-
-This is probably CONFUSION.
-
-Example:
-
-Student:
-Explain dimensional analysis.
-
-Student:
-"throw another one at me"
-
-This is PRACTICE.
-
-Example:
-
-Buddy:
-[practice problem]
-
-Student:
-"I think I got 5 N"
-
-This is CHECK_ANSWER.
-
-------------------------------------------------------------
-OUT OF SCOPE
-------------------------------------------------------------
-
-Only use OUT_OF_SCOPE when the request is genuinely unrelated
-to the current learning domain.
-
-Do NOT classify something as outside the domain simply because:
-
-- it is short
-- it contains slang
-- it contains typos
-- it is informal
-- it lacks Physics terminology
-- the student is confused
-- the student asks for another problem
-- the student asks for a hint
-- the student changes activities
-- the student says they don't know
-
-If the request is genuinely unrelated, redirect naturally.
-
-Do not sound like an error message.
-
-------------------------------------------------------------
-TUTORING BEHAVIOR
-------------------------------------------------------------
-
-You are a learning guide.
-
-Do not dump answers when the student can reasonably work
-through the problem.
-
-Prefer:
-
-- guiding questions
-- hints
-- small steps
-- explanations
-- examples
-- checking reasoning
-
-------------------------------------------------------------
-HINT LADDER
-------------------------------------------------------------
-
-LEVEL 1:
-Guiding question.
-
-LEVEL 2:
-Concept reminder.
-
-LEVEL 3:
-Formula or relationship.
-
-LEVEL 4:
-Partial reasoning.
-
-LEVEL 5:
-Full explanation.
-
-If the student says:
-
-"I don't know"
-"I'm stuck"
-"I'm lost"
-
-give the next useful hint instead of immediately revealing
-the complete solution.
-
-------------------------------------------------------------
-PRACTICE
-------------------------------------------------------------
-
-When the student asks for practice:
-
-Generate a suitable exercise based on the current topic.
-
-Do not immediately reveal the answer.
-
-Wait for the student's attempt.
-
-If they ask for another exercise, generate another.
-
-If they ask for something harder, increase difficulty.
-
-If they ask for something easier, decrease difficulty.
-
-------------------------------------------------------------
-CHECKING WORK
-------------------------------------------------------------
-
-When a student gives an answer:
-
-Check their reasoning.
-
-Do not blindly say "correct" or "incorrect."
-
-If correct:
-celebrate naturally and briefly explain why.
-
-If incorrect:
-identify the useful step to revisit.
-
-Never shame the student.
-
-------------------------------------------------------------
-SIMPLIFY
-------------------------------------------------------------
-
-When something is difficult:
-
-Do NOT simply repeat the previous explanation.
-
-Actually simplify it.
-
-Use:
-
-- shorter sentences
-- intuitive explanations
-- simple analogies
-- concrete examples
-- practical situations
-
-------------------------------------------------------------
-REAL-LIFE EXAMPLES
-------------------------------------------------------------
-
-When useful, connect Physics to:
-
-- robotics
-- electronics
-- embedded systems
-- programming
-- engineering
-- experiments
-- transport
-- everyday technology
+CONVERSATION CONTEXT:
+Use previous messages to understand what the student means.
 
 For example:
+Student: "Give me a problem."
+Tutor: [exercise]
+Student: "I don't know."
+This means the student is struggling with the current exercise.
 
-"Imagine you're programming a small robot..."
+Student: "Give me another one."
+This means generate a new exercise on the same topic.
 
-Then connect the situation to Physics.
+Student: "Make it easier."
+This means decrease difficulty or simplify the current learning task.
 
-Do not force an example into every response.
+Student: "That was too easy."
+This means increase difficulty.
 
-------------------------------------------------------------
-CURRICULUM GROUNDING
-------------------------------------------------------------
+PRACTICE:
+When generating an exercise:
+- Give ONE exercise.
+- Do NOT reveal the solution.
+- Match the current difficulty.
+- Ground the exercise in the curriculum.
+- Prefer realistic Physics/engineering/programming-related contexts when useful.
 
-Use the supplied curriculum context as your primary source.
+CHECKING:
+When checking a student's attempt:
+- Evaluate the reasoning, not only the final answer.
+- Distinguish CORRECT, PARTIAL, INCORRECT, and UNCLEAR.
+- If partially correct, explicitly recognize what they understood.
+- Do not blindly mark an answer correct or incorrect.
+- Do not reveal the complete solution unnecessarily.
 
-Do not invent RCA-specific content.
+HINT LADDER:
+Use progressive help.
 
-If the supplied material does not support a claim,
-be transparent.
+Level 1:
+Ask a guiding question.
 
-Do not silently replace school terminology with unrelated
-terminology.
+Level 2:
+Remind the student of the relevant concept.
 
-------------------------------------------------------------
-PERSONALITY
-------------------------------------------------------------
+Level 3:
+Point toward the relevant formula or dimensional relationship.
 
-Be:
+Level 4:
+Give a partial solution.
 
-- intelligent
-- friendly
-- patient
-- encouraging
-- natural
-- school-appropriate
-- slightly Gen-Z/developer-friendly
+Level 5:
+Give the complete explanation only when appropriate.
 
-Occasional emojis are fine.
+If a student says "I don't know", normally give a useful hint rather than the full answer.
 
-Do not overuse slang.
+SIMPLIFICATION:
+If the student says something is confusing or asks for an easier explanation:
+- use simpler language
+- reduce abstraction
+- use a concrete analogy
+- preserve correctness
+- do not merely repeat the previous explanation with different words
 
-Match the student's tone naturally.
+REAL-LIFE EXAMPLES:
+When the student asks where a concept is useful, connect it to practical contexts such as:
+- electronics
+- robotics
+- programming
+- engineering
+- measurements
+- experiments
 
-Never force slang.
+Do not invent specific school activities that are not supported by the curriculum.
 
-------------------------------------------------------------
-RESPONSE VARIATION
-------------------------------------------------------------
+DIFFICULTY:
+Use easy, medium, or hard.
 
-Do not repeatedly use identical wording.
+Increase difficulty when the student demonstrates strong understanding.
 
-Vary:
+Decrease difficulty when the student repeatedly struggles.
 
-- greetings
-- encouragement
-- transitions
-- examples
-- explanations
-- redirect wording
+Do not change difficulty simply because of one mistake.
 
-Do NOT randomly change technical facts.
+PROGRESS:
+Use the provided learning state.
+Do not invent statistics about the student.
 
-------------------------------------------------------------
-OUTPUT FORMAT
-------------------------------------------------------------
+RESPONSE STYLE:
+Friendly.
+Patient.
+Encouraging.
+Natural.
+Concise but useful.
+Slightly informal when appropriate.
 
+Do not overuse emojis.
+
+VARIATION:
+Avoid repeating identical wording across turns.
+Respond naturally to the exact current message.
+
+OUTPUT:
 Return ONLY valid JSON.
 
-Do not use markdown code fences.
-
-Use exactly:
+Required structure:
 
 {
   "intent": "ONE_VALID_INTENT",
-  "topic": "best inferred topic or empty string",
+  "topic": "best inferred topic",
   "learning_action": "ONE_VALID_ACTION",
   "difficulty": "easy | medium | hard | unknown",
   "confidence": 0.0,
-  "reply": "the complete student-facing response"
+  "reply": "complete student-facing response",
+  "exercise": {
+    "id": "string",
+    "question": "string",
+    "concept": "string",
+    "expected_answer_type": "string"
+  },
+  "check": {
+    "status": "CORRECT | PARTIAL | INCORRECT | UNCLEAR | NONE",
+    "feedback": "string",
+    "needs_hint": true
+  }
 }
 
-The "reply" must contain ONLY what the student should see.
+If no exercise is involved:
+"exercise" must be null.
 
-Do not put analysis inside reply.
+If no checking is involved:
+"check.status" must be "NONE".
 `;
 
-
-// ============================================================
-// MAIN TUTOR ENGINE — V0.4
-// ============================================================
+// ---------------------------------------------------------
+// 8. MAIN TUTOR FUNCTION
+// ---------------------------------------------------------
 
 export async function askTutor({
   message,
   history = [],
-  mode = "tutor"
+  sessionId = "default"
 }) {
+  const state = getSession(sessionId);
 
-  const clean =
-    cleanHistory(history);
+  const safeMessage =
+    typeof message === "string"
+      ? message.trim()
+      : "";
 
+  if (!safeMessage) {
+    return {
+      reply:
+        "Tell me what you'd like to learn or practice.",
+      session: state,
+      progress: getProgress(sessionId)
+    };
+  }
 
-  // ==========================================================
-  // 1. LOCAL RETRIEVAL
-  // ==========================================================
+  const safeHistory = cleanHistory(history);
 
-  /*
-   * Retrieval costs ZERO API requests.
-   *
-   * We include the current message plus a small amount
-   * of recent conversation so short follow-ups like
-   * "give me another" can still retrieve the current topic.
-   */
+  // -------------------------------------------------------
+  // Detect obvious state-dependent actions locally.
+  // This saves unnecessary complexity and protects the
+  // exercise lifecycle.
+  // -------------------------------------------------------
 
-  const recentText =
-    clean
-      .slice(-4)
-      .map((item) => item.content)
-      .join(" ");
+  const lowerMessage =
+    safeMessage.toLowerCase();
 
-  const retrievalQuery = [
-    recentText,
-    message
-  ]
-    .filter(Boolean)
+  const asksForHint =
+    lowerMessage.includes("hint") ||
+    lowerMessage.includes("help me") ||
+    lowerMessage.includes("i don't know") ||
+    lowerMessage.includes("i dont know") ||
+    lowerMessage.includes("stuck");
+
+  const asksForProgress =
+    lowerMessage.includes("how am i doing") ||
+    lowerMessage.includes("my progress") ||
+    lowerMessage.includes("show my progress");
+
+  // -------------------------------------------------------
+  // Retrieve curriculum context BEFORE the AI request.
+  // Retrieval itself costs ZERO API requests.
+  // -------------------------------------------------------
+
+  const recentText = safeHistory
+    .slice(-5)
+    .map(item => item.content)
     .join(" ");
 
+  const retrievalQuery = [
+    state.topic,
+    state.subject,
+    recentText,
+    safeMessage
+  ].join(" ");
 
-  const retrieved =
+  const relevantChunks =
     retrieveRelevantChunks(
       retrievalQuery,
       6
     );
 
+  const curriculumContext =
+    relevantChunks.length
+      ? relevantChunks
+          .map(
+            chunk =>
+              `[${chunk.path}]\n${chunk.text}`
+          )
+          .join("\n\n")
+      : "No directly matching curriculum chunk was retrieved.";
 
-  const context =
-    retrieved.length > 0
-      ? retrieved.join(
-          "\n\n---\n\n"
-        )
-      : "No directly matching curriculum material was retrieved.";
+  // -------------------------------------------------------
+  // Learning state context
+  // -------------------------------------------------------
 
+  const currentExercise =
+    state.currentExercise
+      ? JSON.stringify(state.currentExercise)
+      : "None";
 
-  // ==========================================================
-  // 2. NO API KEY
-  // ==========================================================
+  const progress =
+    getProgress(sessionId);
+
+  const learningStateContext = `
+SUBJECT:
+${state.subject}
+
+TOPIC:
+${state.topic}
+
+CURRENT DIFFICULTY:
+${state.difficulty}
+
+CURRENT EXERCISE:
+${currentExercise}
+
+ATTEMPTS ON CURRENT EXERCISE:
+${state.attempts}
+
+HINTS USED ON CURRENT EXERCISE:
+${state.hintsUsed}
+
+SESSION PROGRESS:
+${JSON.stringify(progress)}
+`;
+
+  // -------------------------------------------------------
+  // Fallback when API unavailable
+  // -------------------------------------------------------
 
   if (!client) {
-
     console.log(
-      "DoStudy Buddy: LOCAL FALLBACK — no API key"
+      "DoStudy Buddy: AI unavailable — using fallback."
     );
 
-    return {
+    const fallback =
+      localFallback(
+        safeMessage,
+        state
+      );
 
-      mode: "local-fallback",
-
-      intent: {
-        intent: "CONTINUE",
-        topic: "",
-        learning_action: "CONTINUE",
-        difficulty: "unknown",
-        confidence: 0
-      },
-
-      reply:
-        localFallback(
-          message,
-          clean,
-          "CONTINUE"
-        ),
-
-      retrieved
-
-    };
+    return applyLearningState(
+      fallback,
+      safeMessage,
+      sessionId
+    );
   }
 
-
-  // ==========================================================
-  // 3. ONE AI REQUEST
-  // ==========================================================
+  // -------------------------------------------------------
+  // ONE AI REQUEST
+  // -------------------------------------------------------
 
   try {
-
     console.log(
       "DoStudy Buddy: AI ACTIVE — 1 request"
     );
 
-
     const response =
       await client.responses.create({
-
-        model: MODEL,
+        model:
+          process.env.OPENAI_MODEL ||
+          "gpt-5.6-luna",
 
         instructions:
           TUTOR_SYSTEM_PROMPT,
 
         input: `
+CURRICULUM CONTEXT:
+${curriculumContext}
 
-MODE:
-${mode}
+LEARNING STATE:
+${learningStateContext}
+
+CONVERSATION HISTORY:
+${formatHistory(safeHistory)}
 
 CURRENT STUDENT MESSAGE:
-${message}
-
-RECENT CONVERSATION:
-${formatHistory(clean)}
-
-CURRICULUM CONTEXT:
-${context}
-
-Remember:
-
-1. Understand the student's CURRENT message.
-2. Use conversation history only as context.
-3. The current request overrides previous activities.
-4. Use curriculum context when relevant.
-5. Return ONLY the required JSON.
+${safeMessage}
 `
       });
 
-
-    // ========================================================
-    // 4. PARSE STRUCTURED RESPONSE
-    // ========================================================
-
-    const raw =
-      response.output_text
-        ?.trim();
-
-
-    if (!raw) {
-      throw new Error(
-        "AI returned an empty response."
-      );
-    }
-
-
-    const cleaned =
-      raw
-        .replace(/^```json/i, "")
-        .replace(/^```/, "")
-        .replace(/```$/, "")
-        .trim();
-
+    const rawOutput =
+      response.output_text?.trim() || "";
 
     let parsed;
 
     try {
-
-      parsed =
-        JSON.parse(cleaned);
-
-    } catch (parseError) {
-
-      /*
-       * Sometimes an AI response may fail to follow JSON
-       * perfectly. Instead of crashing the tutor, preserve
-       * the response as a normal reply.
-       */
-
+      parsed = JSON.parse(rawOutput);
+    } catch {
       console.warn(
-        "DoStudy Buddy: JSON parsing failed. " +
-        "Using raw AI response."
+        "DoStudy Buddy: AI returned non-JSON output."
       );
 
-      return {
-
-        mode: "ai",
-
-        intent: {
-          intent: "CONTINUE",
-          topic: "",
-          learning_action: "CONTINUE",
-          difficulty: "unknown",
-          confidence: 0
-        },
-
-        reply: raw,
-
-        retrieved
-
+      parsed = {
+        intent: "CONTINUE",
+        topic: state.topic,
+        learning_action: "CONTINUE",
+        difficulty: state.difficulty,
+        confidence: 0.5,
+        reply: rawOutput,
+        exercise: null,
+        check: {
+          status: "NONE",
+          feedback: "",
+          needs_hint: false
+        }
       };
     }
 
+    const result =
+      normalizeTutorResult(parsed);
 
-    // ========================================================
-    // 5. NORMALIZE
-    // ========================================================
+    // -----------------------------------------------------
+    // Force progress requests through current state.
+    // -----------------------------------------------------
 
-    const tutorResult =
-      normalizeTutorResult(
-        parsed
+    if (asksForProgress) {
+      result.intent = "PROGRESS";
+      result.learning_action = "SHOW_PROGRESS";
+
+      result.reply =
+        `${getProgressMessage(progress)} ` +
+        `You've attempted ${progress.exercisesAttempted} ` +
+        `exercise(s), with ${progress.accuracy}% accuracy.`;
+    }
+
+    // -----------------------------------------------------
+    // Prevent an AI response from accidentally giving a
+    // second exercise while one is active unless the
+    // student clearly asks for another one.
+    // -----------------------------------------------------
+
+    const asksForAnother =
+      lowerMessage.includes("another") ||
+      lowerMessage.includes("new one") ||
+      lowerMessage.includes("different one");
+
+    if (
+      state.currentExercise &&
+      !asksForAnother &&
+      result.learning_action ===
+        "GENERATE_EXERCISE"
+    ) {
+      result.learning_action = "CONTINUE";
+    }
+
+    // -----------------------------------------------------
+    // Hint accounting
+    // -----------------------------------------------------
+
+    if (
+      result.learning_action ===
+      "GIVE_HINT"
+    ) {
+      recordHint(sessionId);
+    }
+
+    // -----------------------------------------------------
+    // Attempt accounting
+    //
+    // If there is an active exercise and the student is
+    // clearly responding to it, count the turn as an attempt.
+    // -----------------------------------------------------
+
+    const checking =
+      result.intent === "CHECK_ANSWER" ||
+      result.learning_action ===
+        "CHECK_WORK";
+
+    if (checking && state.currentExercise) {
+      recordAttempt(sessionId);
+    }
+
+    // -----------------------------------------------------
+    // Apply result to learning state
+    // -----------------------------------------------------
+
+    return applyLearningState(
+      result,
+      safeMessage,
+      sessionId
+    );
+  } catch (error) {
+    if (
+      error?.code === "rate_limit_exceeded" ||
+      error?.status === 429
+    ) {
+      console.log(
+        "DoStudy Buddy: AI RATE LIMITED — using fallback."
       );
-
-
-    // ========================================================
-    // 6. SAFETY CHECK
-    // ========================================================
-
-    if (!tutorResult.reply) {
-
-      throw new Error(
-        "AI returned no student-facing reply."
+    } else {
+      console.error(
+        "DoStudy Buddy AI error:",
+        error.message
       );
     }
 
+    const fallback =
+      localFallback(
+        safeMessage,
+        state
+      );
 
-    // ========================================================
-    // 7. LOG UNDERSTANDING
-    // ========================================================
+    return applyLearningState(
+      fallback,
+      safeMessage,
+      sessionId
+    );
+  }
+}
 
-    console.log(
-      "DoStudy Buddy understanding:",
+// ---------------------------------------------------------
+// 9. APPLY LEARNING STATE
+// ---------------------------------------------------------
+
+function applyLearningState(
+  result,
+  message,
+  sessionId
+) {
+  const state =
+    getSession(sessionId);
+
+  // Topic
+  if (
+    result.topic &&
+    result.topic.trim()
+  ) {
+    updateSession(
+      sessionId,
       {
-        intent:
-          tutorResult.intent,
+        topic: result.topic.trim()
+      }
+    );
+  }
 
-        topic:
-          tutorResult.topic,
+  // Difficulty
+  if (
+    result.difficulty &&
+    result.difficulty !== "unknown"
+  ) {
+    updateSession(
+      sessionId,
+      {
+        difficulty: result.difficulty
+      }
+    );
+  }
 
-        action:
-          tutorResult.learning_action,
+  // -------------------------------------------------------
+  // New exercise
+  // -------------------------------------------------------
 
-        difficulty:
-          tutorResult.difficulty,
+  if (
+    result.learning_action ===
+      "GENERATE_EXERCISE" &&
+    result.exercise?.question
+  ) {
+    startExercise(
+      sessionId,
+      result.exercise
+    );
+  }
 
-        confidence:
-          tutorResult.confidence
+  // -------------------------------------------------------
+  // Checking result
+  // -------------------------------------------------------
+
+  if (
+    result.check &&
+    result.check.status !== "NONE" &&
+    state.currentExercise
+  ) {
+    const concept =
+      result.exercise?.concept ||
+      state.currentExercise.concept ||
+      state.topic;
+
+    const updatedState =
+      finishExercise(
+        sessionId,
+        result.check.status,
+        concept
+      );
+
+    // Difficulty adaptation
+    const newDifficulty =
+      adjustDifficulty(
+        updatedState.difficulty,
+        result.check.status,
+        updatedState.attempts,
+        updatedState.hintsUsed
+      );
+
+    updateSession(
+      sessionId,
+      {
+        difficulty: newDifficulty
       }
     );
 
-
-    // ========================================================
-    // 8. RETURN
-    // ========================================================
-
-    return {
-
-      mode: "ai",
-
-      intent: tutorResult,
-
-      reply:
-        tutorResult.reply,
-
-      retrieved
-
-    };
-
-
-  } catch (error) {
-
-    // ========================================================
-    // 9. RATE LIMIT / API ERROR
-    // ========================================================
-
-    const errorMessage =
-      error?.message ||
-      String(error);
-
-
-    if (
-      error?.status === 429 ||
-      error?.code ===
-        "rate_limit_exceeded" ||
-      errorMessage
-        .toLowerCase()
-        .includes("rate limit")
-    ) {
-
-      console.warn(
-        "DoStudy Buddy: AI RATE LIMITED — using fallback."
-      );
-
-    } else {
-
-      console.error(
-        "DoStudy Buddy AI error:",
-        error
-      );
-    }
-
-
-    return {
-
-      mode:
-        "fallback-after-error",
-
-      intent: {
-        intent: "CONTINUE",
-        topic: "",
-        learning_action: "CONTINUE",
-        difficulty: "unknown",
-        confidence: 0
-      },
-
-      reply:
-        localFallback(
-          message,
-          clean,
-          "CONTINUE"
-        ),
-
-      retrieved
-
-    };
+    console.log(
+      "DoStudy Buddy learning result:",
+      {
+        status:
+          result.check.status,
+        attempts:
+          updatedState.attempts,
+        hintsUsed:
+          updatedState.hintsUsed,
+        difficulty:
+          newDifficulty
+      }
+    );
   }
+
+  // -------------------------------------------------------
+  // Confidence
+  // -------------------------------------------------------
+
+  const confidenceMatch =
+    message.match(
+      /(?:confidence|confident)\s*(?:is|:)?\s*([1-5])/i
+    );
+
+  if (confidenceMatch) {
+    updateSession(
+      sessionId,
+      {
+        confidence:
+          Number(confidenceMatch[1])
+      }
+    );
+  }
+
+  // -------------------------------------------------------
+  // Final state
+  // -------------------------------------------------------
+
+  const finalState =
+    getSession(sessionId);
+
+  const finalProgress =
+    getProgress(sessionId);
+
+  console.log(
+    "DoStudy Buddy understanding:",
+    {
+      intent: result.intent,
+      topic: result.topic || finalState.topic,
+      action: result.learning_action,
+      difficulty:
+        finalState.difficulty,
+      confidence:
+        result.confidence
+    }
+  );
+
+  return {
+    reply:
+      result.reply ||
+      "Let's keep going.",
+
+    intent:
+      result.intent,
+
+    topic:
+      finalState.topic,
+
+    learning_action:
+      result.learning_action,
+
+    difficulty:
+      finalState.difficulty,
+
+    confidence:
+      result.confidence,
+
+    exercise:
+      finalState.currentExercise,
+
+    check:
+      result.check,
+
+    session: finalState,
+
+    progress: finalProgress
+  };
 }
